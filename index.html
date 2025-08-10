@@ -26,7 +26,7 @@
       const [cols, setCols] = useState(32);
 
       // Scale domain (0..1). Final radius = scale * safeRadius
-      const [scaleMin, setScaleMin] = useState(0.10);
+      const [scaleMin, setScaleMin] = useState(0.00);
       const [scaleMax, setScaleMax] = useState(1.00);
 
       // Reverse mapping: near ? big (ON) vs near ? small (OFF)
@@ -246,7 +246,7 @@
       const resetAll = () => {
         setRows(24);
         setCols(32);
-        setScaleMin(0.10);
+        setScaleMin(0.00);
         setScaleMax(1.00);
         setColorLow('#74c0fc');
         setColorMid('#3b82f6');
@@ -299,7 +299,7 @@
                 <ControlRow label={`Scale Max (${scaleMax.toFixed(2)})`}>
                   <input type="range" min={0} max={1} step={0.01} value={scaleMax} onChange={e=>updateScaleMax(parseFloat(e.target.value))} className="w-full" />
                 </ControlRow>
-                <p className="text-xs text-slate-500">Near attractor ? {reverse ? 'larger' : 'smaller'} • Far ? {reverse ? 'smaller' : 'larger'}</p>
+                <p className="text-xs text-slate-500">Near attractor ? {reverse ? 'larger' : 'smaller'} Â• Far ? {reverse ? 'smaller' : 'larger'}</p>
               </div>
 
               {/* Colors */}
@@ -324,14 +324,14 @@
 
               <div className="text-sm text-slate-600 space-y-1 pt-2">
                 <p><b>Left-click</b> to add. <b>Drag</b> to move. <b>Right-click</b> a handle to delete.</p>
-                <p>{attractors.length} attractor{attractors.length===1?'':'s'} • {rows*cols} circles</p>
+                <p>{attractors.length} attractor{attractors.length===1?'':'s'} Â• {rows*cols} circles</p>
               </div>
             </section>
 
             {/* Canvas */}
             <section className="lg:col-span-8 bg-white rounded-2xl shadow-sm border border-slate-200 p-3 relative">
               <div className="absolute top-3 right-3 text-[11px] bg-slate-100 rounded-full px-2 py-1 text-slate-600 select-none">
-                Canvas: {canvasSize.w}×{canvasSize.h}
+                Canvas: {canvasSize.w}Ã—{canvasSize.h}
               </div>
               <div className="w-full overflow-auto">
                 <canvas
@@ -364,3 +364,4 @@
   </script>
 </body>
 </html>
+
