@@ -1,0 +1,366 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Attractor Grid (Scale + Reverse)</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body class="bg-slate-50">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useEffect, useMemo, useRef, useState } = React;
+
+    function AttractorGridApp() {
+      const canvasRef = useRef(null);
+
+      // Fixed canvas
+      const [canvasSize] = useState({ w: 1000, h: 1000 });
+
+      // Grid
+      const [rows, setRows] = useState(24);
+      const [cols, setCols] = useState(32);
+
+      // Scale domain (0..1). Final radius = scale * safeRadius
+      const [scaleMin, setScaleMin] = useState(0.10);
+      const [scaleMax, setScaleMax] = useState(1.00);
+
+      // Reverse mapping: near ? big (ON) vs near ? small (OFF)
+      const [reverse, setReverse] = useState(false);
+
+      // Colors (3-stop gradient)
+      const [colorLow, setColorLow]   = useState("#74c0fc");
+      const [colorMid, setColorMid]   = useState("#3b82f6");
+      const [colorHigh, setColorHigh] = useState("#1e3a8a");
+
+      // Attractors
+      const [attractors, setAttractors] = useState([]); // [{x,y}]
+      const [draggingIndex, setDraggingIndex] = useState(null);
+
+      // Handle sizes
+      const HANDLE_R = 8;
+      const HIT_R = 16;
+
+      // Utils
+      const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+      const hexToRgb = (hex) => {
+        const s = hex.replace('#','');
+        const b = s.length === 3 ? s.split('').map(ch => ch + ch).join('') : s;
+        const n = parseInt(b, 16);
+        return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
+      };
+      const rgbToHex = ({ r, g, b }) => {
+        const h = (x) => x.toString(16).padStart(2, '0');
+        return `#${h(r)}${h(g)}${h(b)}`;
+      };
+      const mix = (a, b, t) => a + (b - a) * t;
+
+      // 3-stop gradient mix (Low ? Mid ? High, mid at 0.5)
+      const mixColor3 = (lowHex, midHex, highHex, t) => {
+        const lo = hexToRgb(lowHex);
+        const mi = hexToRgb(midHex);
+        const hi = hexToRgb(highHex);
+        if (t <= 0.5) {
+          const u = t * 2;
+          return rgbToHex({
+            r: Math.round(mix(lo.r, mi.r, u)),
+            g: Math.round(mix(lo.g, mi.g, u)),
+            b: Math.round(mix(lo.b, mi.b, u)),
+          });
+        } else {
+          const u = (t - 0.5) * 2;
+          return rgbToHex({
+            r: Math.round(mix(mi.r, hi.r, u)),
+            g: Math.round(mix(mi.g, hi.g, u)),
+            b: Math.round(mix(mi.b, hi.b, u)),
+          });
+        }
+      };
+
+      // Grid points (centers)
+      const gridPoints = useMemo(() => {
+        const W = canvasSize.w, H = canvasSize.h;
+        const pts = [];
+        if (rows <= 0 || cols <= 0) return pts;
+        const cellW = W / cols, cellH = H / rows;
+        for (let i = 0; i < rows; i++) {
+          for (let j = 0; j < cols; j++) {
+            pts.push({ x: (j + 0.5) * cellW, y: (i + 0.5) * cellH });
+          }
+        }
+        return pts;
+      }, [rows, cols, canvasSize]);
+
+      // Draw
+      useEffect(() => {
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        const dpr = window.devicePixelRatio || 1;
+
+        // HiDPI
+        canvas.width = Math.floor(canvasSize.w * dpr);
+        canvas.height = Math.floor(canvasSize.h * dpr);
+        canvas.style.width = canvasSize.w + "px";
+        canvas.style.height = canvasSize.h + "px";
+
+        const ctx = canvas.getContext('2d');
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, canvasSize.w, canvasSize.h);
+
+        const hasAttractors = attractors.length > 0;
+
+        // Safe max radius from grid spacing (prevents overlaps)
+        const cellW = canvasSize.w / Math.max(1, cols);
+        const cellH = canvasSize.h / Math.max(1, rows);
+        const safeRadius = 0.98 * 0.5 * Math.min(cellW, cellH); // tiny gap
+
+        // Precompute nearest distances and dMax (for normalization)
+        let dMax = 0;
+        const nearestDist = new Array(gridPoints.length).fill(0);
+
+        if (hasAttractors) {
+          for (let k = 0; k < gridPoints.length; k++) {
+            const gp = gridPoints[k];
+            let minD2 = Infinity;
+            for (let a = 0; a < attractors.length; a++) {
+              const dx = gp.x - attractors[a].x;
+              const dy = gp.y - attractors[a].y;
+              const d2 = dx*dx + dy*dy;
+              if (d2 < minD2) minD2 = d2;
+            }
+            const d = Math.sqrt(minD2);
+            nearestDist[k] = d;
+            if (d > dMax) dMax = d;
+          }
+        }
+
+        // Draw circles
+        for (let k = 0; k < gridPoints.length; k++) {
+          const gp = gridPoints[k];
+
+          // Normalize: t = d / dMax (near=0, far=1). If no attractors, t=0.
+          let t = 0;
+          if (hasAttractors && dMax > 1e-6) t = clamp(nearestDist[k] / dMax, 0, 1);
+
+          // Apply reverse toggle to mapping for both scale and color
+          const u = reverse ? (1 - t) : t;
+
+          // Scale within [scaleMin, scaleMax]
+          const s = scaleMin + (scaleMax - scaleMin) * u;
+
+          // Final radius is derived from scale (no absolute rMin/rMax)
+          const radius = s * safeRadius;
+
+          const fill = mixColor3(colorLow, colorMid, colorHigh, u);
+
+          ctx.beginPath();
+          ctx.arc(gp.x, gp.y, radius, 0, Math.PI * 2);
+          ctx.fillStyle = fill;
+          ctx.fill();
+        }
+
+        // Draw attractor handles
+        ctx.lineWidth = 2;
+        for (let i = 0; i < attractors.length; i++) {
+          const a = attractors[i];
+          ctx.beginPath();
+          ctx.arc(a.x, a.y, HIT_R, 0, Math.PI * 2);
+          ctx.strokeStyle = 'rgba(0,0,0,0.08)';
+          ctx.stroke();
+
+          ctx.beginPath();
+          ctx.arc(a.x, a.y, HANDLE_R, 0, Math.PI * 2);
+          ctx.fillStyle = draggingIndex === i ? '#111827' : '#0f172a';
+          ctx.fill();
+          ctx.strokeStyle = '#ffffff';
+          ctx.stroke();
+        }
+      }, [gridPoints, attractors, scaleMin, scaleMax, reverse, colorLow, colorMid, colorHigh, canvasSize, rows, cols, draggingIndex]);
+
+      // Pointer helpers
+      const getCanvasXY = (evt) => {
+        const rect = canvasRef.current.getBoundingClientRect();
+        const scaleX = canvasRef.current.width / rect.width;
+        const scaleY = canvasRef.current.height / rect.height;
+        const xCss = evt.clientX - rect.left;
+        const yCss = evt.clientY - rect.top;
+        const dpr = window.devicePixelRatio || 1;
+        return { x: (xCss * scaleX) / dpr, y: (yCss * scaleY) / dpr };
+      };
+      const nearestAttractor = (p) => {
+        let idx = -1, bestD2 = HIT_R * HIT_R + 1;
+        for (let i = 0; i < attractors.length; i++) {
+          const dx = p.x - attractors[i].x;
+          const dy = p.y - attractors[i].y;
+          const d2 = dx*dx + dy*dy;
+          if (d2 <= bestD2) { bestD2 = d2; idx = i; }
+        }
+        return idx;
+      };
+
+      // Events
+      const onPointerDown = (evt) => {
+        if (evt.button !== 0) return; // left only
+        const p = getCanvasXY(evt);
+        const hit = nearestAttractor(p);
+        if (hit !== -1) {
+          setDraggingIndex(hit);
+          canvasRef.current.setPointerCapture(evt.pointerId);
+          return;
+        }
+        setAttractors(prev => [...prev, { x: p.x, y: p.y }]);
+      };
+      const onPointerMove = (evt) => {
+        if (draggingIndex == null) return;
+        const p = getCanvasXY(evt);
+        setAttractors(prev => {
+          const next = prev.slice();
+          if (!next[draggingIndex]) return prev;
+          next[draggingIndex] = { x: p.x, y: p.y };
+          return next;
+        });
+      };
+      const endDrag = (evt) => {
+        if (draggingIndex != null) {
+          try { canvasRef.current.releasePointerCapture(evt.pointerId); } catch {}
+        }
+        setDraggingIndex(null);
+      };
+      const onContextMenu = (evt) => {
+        evt.preventDefault();
+        const p = getCanvasXY(evt);
+        const hit = nearestAttractor(p);
+        if (hit !== -1) setAttractors(prev => prev.filter((_, i) => i !== hit));
+      };
+
+      // UI helpers
+      const gradientCss = React.useMemo(
+        () => `linear-gradient(90deg, ${colorLow} 0%, ${colorMid} 50%, ${colorHigh} 100%)`,
+        [colorLow, colorMid, colorHigh]
+      );
+
+      const resetAll = () => {
+        setRows(24);
+        setCols(32);
+        setScaleMin(0.10);
+        setScaleMax(1.00);
+        setColorLow('#74c0fc');
+        setColorMid('#3b82f6');
+        setColorHigh('#1e3a8a');
+        setReverse(false);
+        setAttractors([]);
+      };
+
+      const updateScaleMin = (v) => setScaleMin(Math.min(v, scaleMax));
+      const updateScaleMax = (v) => setScaleMax(Math.max(v, scaleMin));
+
+      return (
+        <div className="w-full min-h-[820px] text-slate-900">
+          <div className="mx-auto max-w-7xl p-4 grid grid-cols-1 lg:grid-cols-12 gap-4">
+            {/* Controls */}
+            <section className="lg:col-span-4 bg-white rounded-2xl shadow-sm border border-slate-200 p-4 space-y-4">
+              <header className="flex items-center justify-between">
+                <h1 className="text-xl font-semibold">Attractor Grid</h1>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setReverse(r => !r)}
+                    className={`px-3 py-1.5 rounded-xl border text-sm hover:bg-slate-50 active:scale-[0.99] ${reverse ? 'bg-slate-900 text-white' : ''}`}
+                    title="Reverse attractor impact (near ? far)"
+                  >
+                    Reverse {reverse ? 'ON' : 'OFF'}
+                  </button>
+                  <button onClick={resetAll} className="px-3 py-1.5 rounded-xl border text-sm hover:bg-slate-50 active:scale-[0.99]">
+                    Reset
+                  </button>
+                </div>
+              </header>
+
+              {/* Grid */}
+              <div className="space-y-3">
+                <h2 className="font-medium">Grid</h2>
+                <ControlRow label={`Rows (${rows})`}>
+                  <input type="range" min={2} max={200} value={rows} onChange={e=>setRows(parseInt(e.target.value))} className="w-full" />
+                </ControlRow>
+                <ControlRow label={`Cols (${cols})`}>
+                  <input type="range" min={2} max={200} value={cols} onChange={e=>setCols(parseInt(e.target.value))} className="w-full" />
+                </ControlRow>
+              </div>
+
+              {/* Scale */}
+              <div className="space-y-3">
+                <h2 className="font-medium">Scale Domain (no overlap)</h2>
+                <ControlRow label={`Scale Min (${scaleMin.toFixed(2)})`}>
+                  <input type="range" min={0} max={1} step={0.01} value={scaleMin} onChange={e=>updateScaleMin(parseFloat(e.target.value))} className="w-full" />
+                </ControlRow>
+                <ControlRow label={`Scale Max (${scaleMax.toFixed(2)})`}>
+                  <input type="range" min={0} max={1} step={0.01} value={scaleMax} onChange={e=>updateScaleMax(parseFloat(e.target.value))} className="w-full" />
+                </ControlRow>
+                <p className="text-xs text-slate-500">Near attractor ? {reverse ? 'larger' : 'smaller'} • Far ? {reverse ? 'smaller' : 'larger'}</p>
+              </div>
+
+              {/* Colors */}
+              <div className="space-y-3">
+                <h2 className="font-medium">Color Gradient</h2>
+                <div className="grid grid-cols-3 gap-3 items-center">
+                  <div className="flex items-center gap-2">
+                    <label className="text-sm">Low</label>
+                    <input type="color" value={colorLow} onChange={e=>setColorLow(e.target.value)} className="h-9 w-12 rounded"/>
+                  </div>
+                  <div className="flex items-center gap-2 justify-center">
+                    <label className="text-sm">Mid</label>
+                    <input type="color" value={colorMid} onChange={e=>setColorMid(e.target.value)} className="h-9 w-12 rounded"/>
+                  </div>
+                  <div className="flex items-center gap-2 justify-end">
+                    <label className="text-sm">High</label>
+                    <input type="color" value={colorHigh} onChange={e=>setColorHigh(e.target.value)} className="h-9 w-12 rounded"/>
+                  </div>
+                </div>
+                <div className="h-3 rounded-full" style={{ background: gradientCss }} />
+              </div>
+
+              <div className="text-sm text-slate-600 space-y-1 pt-2">
+                <p><b>Left-click</b> to add. <b>Drag</b> to move. <b>Right-click</b> a handle to delete.</p>
+                <p>{attractors.length} attractor{attractors.length===1?'':'s'} • {rows*cols} circles</p>
+              </div>
+            </section>
+
+            {/* Canvas */}
+            <section className="lg:col-span-8 bg-white rounded-2xl shadow-sm border border-slate-200 p-3 relative">
+              <div className="absolute top-3 right-3 text-[11px] bg-slate-100 rounded-full px-2 py-1 text-slate-600 select-none">
+                Canvas: {canvasSize.w}×{canvasSize.h}
+              </div>
+              <div className="w-full overflow-auto">
+                <canvas
+                  ref={canvasRef}
+                  className="rounded-xl bg-white touch-none block"
+                  onPointerDown={onPointerDown}
+                  onPointerMove={onPointerMove}
+                  onPointerUp={endDrag}
+                  onPointerLeave={endDrag}
+                  onContextMenu={onContextMenu}
+                />
+              </div>
+            </section>
+          </div>
+        </div>
+      );
+    }
+
+    function ControlRow({ label, children }) {
+      return (
+        <div className="grid grid-cols-5 items-center gap-3">
+          <div className="col-span-2 text-sm text-slate-700 select-none">{label}</div>
+          <div className="col-span-3">{children}</div>
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<AttractorGridApp />);
+  </script>
+</body>
+</html>
